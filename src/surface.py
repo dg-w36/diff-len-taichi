@@ -1,5 +1,6 @@
 import taichi as ti
 import taichi.math as tm
+from collections import OrderedDict
 
 @ti.dataclass
 class Ray3d:
@@ -14,12 +15,12 @@ class Ray3d:
         self.re = self.ro + self.t * self.rd
 
     @ti.func
-    def ray_sec_plane(self, height:ti.f32):
+    def ray_sec_plane(self, height):
         self.t = (height - self.ro.z) / self.rd.z
         self.re = self.ro + self.t * self.rd
 
     @ti.func
-    def ray_sec_surface(self, surf3d: ti.template()):
+    def ray_sec_surface(self, surf3d):
         # init_height
         self.ray_sec_plane(surf3d.height[None])
 
@@ -30,7 +31,7 @@ class Ray3d:
             self.re = self.ro + self.t * self.rd
 
     @ti.func
-    def ray_reflct_surface(self, surface: ti.template()):
+    def ray_reflct_surface(self, surface):
         self.ro = self.re
         self.rd = tm.refract(self.rd, surface.curve_normal_func(self.re.x, self.re.y), surface.n_in/surface.n_out)
 
@@ -83,9 +84,97 @@ class Rays_3d() :
         for i in ti.grouped(self.ray_field):
             self.ray_field[i].ray_propergate(t)
 
+
+@ti.dataclass
+class Spherical_param:
+    height: float
+    curvature: float
+
+    @ti.func
+    def mul(self, lr: float):
+        height = self.height * lr
+        curvature = self.curvature * lr
+        return Spherical_param(height, curvature)
+
+    @ti.func
+    def add(self, param_new):
+        height = param_new.height + self.height
+        curvature = param_new.curvature + self.curvature
+        return Spherical_param(height, curvature)
+    
+    @ti.func
+    def update_add(self, param_new):
+        self.height += param_new.height
+        self.curvature += param_new.curvature
+    
+    @ti.func
+    def update_mul(self, lr: float):
+        self.height *= lr
+        self.curvature *= lr
+    
+    @ti.func
+    def square(self):
+        height = self.height**2
+        curvature = self.curvature**2
+        return Spherical_param(height, curvature)
+    
+    @ti.func
+    def sqrt(self):
+        height = ti.sqrt(self.height)
+        curvature = ti.sqrt(self.curvature)
+        return Spherical_param(height, curvature)
+    
+@ti.data_oriented
+class spherical_3d():
+    def __init__(self, param, n_in, n_out, max_order=10) -> None:
+        self.param = param
+        self.n_in = n_in
+        self.n_out = n_out
+
+        self.param[None].height = height
+        self.param[None].curvature = curvature
+
+        self.usage_order = max_order
+        self.max_order = max_order
+        self.param
+
+    @ti.func
+    def curve_func(self, x: ti.f32, y:ti.f32) -> ti.f32:
+        k = self.param[None].curvature**2*(x**2+y**2)
+        tmp_a = ti.sqrt(1-k)
+        sum = self.param[None].curvature*(x**2+y**2) / (1+tmp_a) + self.height[None]
+
+        return sum
+
+    @ti.func
+    def curve_tangent_vec(self, x:ti.f32) -> ti.f32:
+        k = self.param[None].curvature**2*x**2
+        tmp_a = ti.sqrt(1-k)
+        sum = 2*self.param[None].curvature*x * (1 + tmp_a - k/2) / (tmp_a*(1+tmp_a)**2)
+
+        return sum
+
+    @ti.func
+    def curve_normal_func(self, x:ti.f32, y:ti.f32) -> ti.math.vec3:
+        N = tm.vec3([self.curve_tangent_vec(x), self.curve_tangent_vec(y), -1])
+        return N / ti.sqrt(N.x**2+N.y**2+N.z**2)
+
+    @ti.kernel
+    def get_curve(self, out_points: ti.template(), width: ti.f32, point_num:ti.i32) :
+        delta = (width*2) / (point_num-1)    
+        for i in range(point_num):
+            out_points[i] = [(delta*i-width), self.curve_func((delta*i-width), 0)]
+    
+    def set_height(self, height):
+        self.height[None] = height
+    
+    def set_curvature(self, curvature):
+        self.curvature[None] = curvature
+
 @ti.data_oriented
 class aspherical_3d():
-    def __init__(self, height, curvature, n_in, n_out, max_order=10, ) -> None:
+
+    def __init__(self, height, curvature, n_in, n_out, max_order=10) -> None:
         self.height = ti.field(ti.f32, shape=(), needs_grad=True)
         self.curvature = ti.field(ti.f32, shape=(), needs_grad=True)
         self.params = ti.field(ti.f32, shape=(max_order), needs_grad=True)
@@ -100,9 +189,9 @@ class aspherical_3d():
 
     @ti.func
     def curve_func(self, x: ti.f32, y:ti.f32) -> ti.f32:
-        k = self.curvature[None]**2*(x**2+y**2)
+        k = (1/self.curvature[None])**2*(x**2+y**2)
         tmp_a = ti.sqrt(1-k)
-        sum = self.curvature[None]*(x**2+y**2) / (1+tmp_a) + self.height[None]
+        sum = (1/self.curvature[None])*(x**2+y**2) / (1+tmp_a) + self.height[None]
 
         sum += (x**2+y**2)**(2) * self.params[1]
         sum += (x**2+y**2)**(3) * self.params[2]
@@ -117,9 +206,9 @@ class aspherical_3d():
 
     @ti.func
     def curve_tangent_vec(self, x:ti.f32) -> ti.f32:
-        k = self.curvature[None]**2*x**2
+        k = (1/self.curvature[None])**2*x**2
         tmp_a = ti.sqrt(1-k)
-        sum = 2*self.curvature[None]*x * (1 + tmp_a - k/2) / (tmp_a*(1+tmp_a)**2)
+        sum = 2*(1/self.curvature[None])*x * (1 + tmp_a - k/2) / (tmp_a*(1+tmp_a)**2)
 
         sum += 2*(2)*x**(2*(2)-1) * self.params[1]
         sum += 2*(3)*x**(2*(3)-1) * self.params[2]

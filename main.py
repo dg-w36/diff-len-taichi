@@ -1,6 +1,8 @@
+# %%
 import taichi as ti
 from src.surface import *
 from src.gui_helper import *
+from src.optimzer import *
 
 # init taichi and prepare GGUI
 ti.init(ti.cuda)
@@ -10,14 +12,18 @@ gui = window.get_gui()
 
 # prepare surface
 surface_num = 4
+# surf3d_Model = ti.field(dtype=aspherical_3d, shape=(surface_num))
 surf3d_list = [None for i in range(surface_num)]
+params_dict = {}
 init_h = -10
 for i in range(surface_num):
     if(i%2 == 0):
-        surf3d_list[i] = aspherical_3d(init_h, 0.01, 1, 1.5)
+        surf3d_list[i] = aspherical_3d(init_h, 1/0.01, 1, 1.5)
     else:
-        surf3d_list[i] = aspherical_3d(init_h, -0.01, 1.5, 1)
+        surf3d_list[i] = aspherical_3d(init_h, -1/0.01, 1.5, 1)
     init_h += 3
+    params_dict["surf_%d_height"%(i)] = surf3d_list[i].height
+    params_dict["surf_%d_curvature"%(i)] = surf3d_list[i].curvature
 
 # helper for draw surface
 point_num = 200
@@ -57,6 +63,7 @@ with ti.ad.Tape(loss):
         refract(opt_rays, surf)
     opt_rays.intersect_with_plane(15)
     mse_loss()
+# %%
 
 # var for slider
 tmp_height = 0
@@ -66,7 +73,7 @@ mode_setting = True
 lr_slider = 25
 opt_count = 0
 fov_slider = 1
-max_count = 100
+max_count = 1000
 click = False
 
 # main loop
@@ -75,21 +82,24 @@ while window.running:
         with gui.sub_window("surface params", 0, 0, 0.667, 0.15) as w:
             surf_index = w.slider_int("surface index", surf_index, 0, surface_num-1)
             tmp_height = w.slider_float("surface height", surf3d_list[surf_index].height[None], -20, 10)
-            tmp_radius = w.slider_float("surface curvature", surf3d_list[surf_index].curvature[None], -0.1, 0.1)
+            tmp_radius = w.slider_float("surface curvature", 1/surf3d_list[surf_index].curvature[None], -0.1, 0.1)
             fov_slider = w.slider_float("number of FOV", fov_slider, 0, 50)
         with gui.sub_window("opt params", 0, 0.85, 0.667, 0.15) as w:
             lr_slider = w.slider_float("lr", lr_slider, 1, 100)
-            max_count = w.slider_float("opt cound", max_count, 1, 100)
+            max_count = w.slider_float("opt cound", max_count, 1, 1000)
             click = w.button("start opt")
         
         # update params from slider
         surf3d_list[surf_index].set_height(tmp_height)
-        surf3d_list[surf_index].set_curvature(tmp_radius)
+        surf3d_list[surf_index].set_curvature(1/tmp_radius)
         
         lr_real = lr_slider/1e6
         if(click):
             mode_setting = False
             opt_count = 0
+            optimzer = SGD_Optimizer(params_dict, step_size=1, mass=0.01)
+            # optimzer = RMSProp_Optimizer(params_dict, step_size=0.1, gamma=0.9, eps=1e-8)
+            # optimzer = Adam_Optimizer(params_dict, step_size=0.2, b1=0.9, b2=0.999, eps=1e-8)
         
     else: # optmization mode
         if(opt_count >= max_count):
@@ -99,12 +109,15 @@ while window.running:
         # forward  
         loss_mean.fill(0.0)
         opt_rays.build_rays_random(ray_bundle_width,fov_slider)
+
+        print(loss.grad[None])
         with ti.ad.Tape(loss):
             for surf in surf3d_list:
                 intersection_no_grad(opt_rays, surf)
                 refract(opt_rays, surf)
             opt_rays.intersect_with_plane(15)
             mse_loss()
+        
 
         if(min_loss > loss[None]):
             min_loss = loss[None]
@@ -113,19 +126,21 @@ while window.running:
         with gui.sub_window("optimization", 0, 0, 0.667, 0.1) as w:
             w.text("loss is %f"%(loss[None]))
         
-        # gradient descent update
-        for surf in surf3d_list:
-            surf.height[None] -= lr_real*1e4 * surf.height.grad[None]
-            surf.curvature[None] -= lr_real * surf.curvature.grad[None]
+        # # gradient descent update
+        # for surf in surf3d_list:
+        #     surf.height[None] -= lr_real*1e4 * surf.height.grad[None]
+        #     surf.curvature[None] -= lr_real * surf.curvature.grad[None]
             
-            # update high order params
-            surf.params[1] -= (lr_real/1e5) * surf.params.grad[1]
+        #     # update high order params
+        #     surf.params[1] -= (lr_real/1e5) * surf.params.grad[1]
 
-            # print(surf.height[None], surf.height.grad[None], end="/")
-            # print(surf.curvature[None], surf.curvature.grad[None])
-            # print(surf.params[0], surf.params[1], surf.params[2])
+        #     # print(surf.height[None], surf.height.grad[None], end="/")
+        #     # print(surf.curvature[None], surf.curvature.grad[None])
+        #     # print(surf.params[0], surf.params[1], surf.params[2])
 
         print("loss is: ", loss[None])
+        optimzer.step()
+        ti.ad.clear_all_gradients()
         opt_count += 1
 
     spot_rays.build_rays_random(ray_bundle_width, fov_slider)
