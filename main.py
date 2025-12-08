@@ -11,19 +11,23 @@ canvas = window.get_canvas()
 gui = window.get_gui() 
 
 # prepare surface
-surface_num = 4
+surface_num = 2
 # surf3d_Model = ti.field(dtype=aspherical_3d, shape=(surface_num))
 surf3d_list = [None for i in range(surface_num)]
 params_dict = {}
 init_h = -10
 for i in range(surface_num):
     if(i%2 == 0):
-        surf3d_list[i] = aspherical_3d(init_h, 1/0.01, 1, 1.5)
+        surf3d_list[i] = aspherical_3d(init_h, 0.01, 1, 1.5)
     else:
-        surf3d_list[i] = aspherical_3d(init_h, -1/0.01, 1.5, 1)
+        surf3d_list[i] = aspherical_3d(init_h, -0.01, 1.5, 1)
     init_h += 3
-    params_dict["surf_%d_height"%(i)] = surf3d_list[i].height
-    params_dict["surf_%d_curvature"%(i)] = surf3d_list[i].curvature
+    # params_dict["surf_%d_height"%(i)] = surf3d_list[i].height
+    # params_dict["surf_%d_curvature"%(i)] = surf3d_list[i].curvature
+    
+surf3d_list[0].curvature[None] = 0.0
+params_dict["surf_1_curvature"] = surf3d_list[1].curvature
+params_dict["surf_1_curvature"][None] = -0.1
 
 # helper for draw surface
 point_num = 200
@@ -48,21 +52,24 @@ loss = ti.field(float, shape=(), needs_grad=True)
 min_loss = 1e10
 down_count = 0
 @ti.kernel
-def mse_loss():
-    for i,j in opt_rays.ray_field:
-        loss_mean[j] += opt_rays.ray_field[i,j].re.xy / opt_rays.ray_nums
-    for i,j in opt_rays.ray_field:
-        error_v = (opt_rays.ray_field[i,j].re.xy-loss_mean[j])
-        loss[None] += (error_v.x**2 +error_v.y**2) / opt_rays.ray_nums
+def mse_loss(rays: ti.template()):
+    for i,j in rays.ray_field:
+        loss_mean[j] += rays.ray_field[i,j].re.xy / rays.ray_nums
+    for i,j in rays.ray_field:
+        error_v = (rays.ray_field[i,j].re.xy-loss_mean[j])
+        loss[None] += (error_v.x**2 +error_v.y**2) / rays.ray_nums
 
 # forward once to warm up device
 opt_rays.build_rays_random(ray_bundle_width, 1)
 with ti.ad.Tape(loss):
     for surf in surf3d_list:
-        intersection(opt_rays, surf)
+        intersection_no_grad(opt_rays, surf)
         refract(opt_rays, surf)
     opt_rays.intersect_with_plane(15)
-    mse_loss()
+    mse_loss(opt_rays)
+print(surf3d_list[1].curvature.grad[None])
+ti.ad.clear_all_gradients()
+print(surf3d_list[1].curvature.grad[None])
 # %%
 
 # var for slider
@@ -82,7 +89,7 @@ while window.running:
         with gui.sub_window("surface params", 0, 0, 0.667, 0.15) as w:
             surf_index = w.slider_int("surface index", surf_index, 0, surface_num-1)
             tmp_height = w.slider_float("surface height", surf3d_list[surf_index].height[None], -20, 10)
-            tmp_radius = w.slider_float("surface curvature", 1/surf3d_list[surf_index].curvature[None], -0.1, 0.1)
+            tmp_radius = w.slider_float("surface curvature", surf3d_list[surf_index].curvature[None], -0.1, 0.1)
             fov_slider = w.slider_float("number of FOV", fov_slider, 0, 50)
         with gui.sub_window("opt params", 0, 0.85, 0.667, 0.15) as w:
             lr_slider = w.slider_float("lr", lr_slider, 1, 100)
@@ -91,13 +98,13 @@ while window.running:
         
         # update params from slider
         surf3d_list[surf_index].set_height(tmp_height)
-        surf3d_list[surf_index].set_curvature(1/tmp_radius)
+        surf3d_list[surf_index].set_curvature(tmp_radius)
         
         lr_real = lr_slider/1e6
         if(click):
             mode_setting = False
             opt_count = 0
-            optimzer = SGD_Optimizer(params_dict, step_size=1, mass=0.01)
+            optimzer = SGD_Optimizer(params_dict, step_size=0.0001, mass=0)
             # optimzer = RMSProp_Optimizer(params_dict, step_size=0.1, gamma=0.9, eps=1e-8)
             # optimzer = Adam_Optimizer(params_dict, step_size=0.2, b1=0.9, b2=0.999, eps=1e-8)
         
@@ -116,7 +123,7 @@ while window.running:
                 intersection_no_grad(opt_rays, surf)
                 refract(opt_rays, surf)
             opt_rays.intersect_with_plane(15)
-            mse_loss()
+            mse_loss(opt_rays)
         
 
         if(min_loss > loss[None]):
@@ -153,7 +160,7 @@ while window.running:
     # draw curve and ray
     gui_rays.build_rays_uniform(ray_bundle_width,fov_slider)
     for i in range(surface_num):
-        intersection(gui_rays, surf3d_list[i])
+        intersection_no_grad(gui_rays, surf3d_list[i])
         ray_helper.show_curve_3d(canvas, gui_rays)
         
         surf3d_list[i].get_curve(tmp_curve, 10, point_num)

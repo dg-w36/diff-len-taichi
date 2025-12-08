@@ -57,7 +57,7 @@ class SGD_Optimizer():
     def step(self):
         for key in self.params:
             # print(self.params[key])
-            # print(self.params[key].grad[None])
+            print(self.params[key].grad[None])
             self._step_parm(self.params[key], self.velocity[key])
 
 @ti.data_oriented
