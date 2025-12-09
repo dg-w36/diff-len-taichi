@@ -31,6 +31,13 @@ class Ray3d:
             self.re = self.ro + self.t * self.rd
     
     @ti.func
+    def ray_sec_collimate(self, surf3d):
+        delta = (surf3d.curve_func(self.re.x, self.re.y) - self.re.z)
+        self.t = self.t + delta
+        self.re = self.ro + self.t * self.rd
+        
+    
+    @ti.func
     def ray_sec_sphere(self, surf3d: ti.template()):
         if ti.abs(surf3d.curvature[None]) < 1e-6 :
             self.ray_sec_plane(surf3d.height[None])
@@ -58,7 +65,7 @@ class Ray3d:
         
         # In_v = surface.n_in * self.rd
         # N_v = surface.curve_normal_func(self.re.x, self.re.y)
-        # In_on_N = tm.dot(In_v, -N_v)
+        # In_on_N = tm.dot(In_v, N_v)
         # Out_on_N = ti.sqrt(surface.n_out**2 - surface.n_in**2 + In_on_N**2)
         # delta = In_on_N - Out_on_N
         # self.rd = tm.normalize(self.rd + delta * N_v)
@@ -148,7 +155,7 @@ class aspherical_3d():
     def curve_normal_func(self, x:ti.f32, y:ti.f32) -> ti.math.vec3:
         der = self.curve_tangent_vec(x, y)
         N = tm.vec3([der.x, der.y, -1])
-        return N / ti.sqrt(N.x**2+N.y**2+N.z**2)
+        return tm.normalize(N)
     
     # @ti.func
     # def curve_normal_func(self, x:ti.f32, y:ti.f32) -> ti.math.vec3:

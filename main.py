@@ -11,22 +11,22 @@ canvas = window.get_canvas()
 gui = window.get_gui() 
 
 # prepare surface
-surface_num = 2
+surface_num = 1
 # surf3d_Model = ti.field(dtype=aspherical_3d, shape=(surface_num))
 surf3d_list = [None for i in range(surface_num)]
 params_dict = {}
 init_h = -10
-for i in range(surface_num):
-    if(i%2 == 0):
-        surf3d_list[i] = aspherical_3d(init_h, 0.01, 1, 1.5)
-    else:
-        surf3d_list[i] = aspherical_3d(init_h, -0.01, 1.5, 1)
-    init_h += 3
-    # params_dict["surf_%d_height"%(i)] = surf3d_list[i].height
-    # params_dict["surf_%d_curvature"%(i)] = surf3d_list[i].curvature
-    
+# for i in range(surface_num):
+#     if(i%2 == 0):
+#         surf3d_list[i] = aspherical_3d(init_h, 0.01, 1, 1.61)
+#     else:
+#         surf3d_list[i] = aspherical_3d(init_h, -0.01, 1.61, 1)
+#     init_h += 3
+#     # params_dict["surf_%d_height"%(i)] = surf3d_list[i].height
+#     # params_dict["surf_%d_curvature"%(i)] = surf3d_list[i].curvature
+surf3d_list[0] = aspherical_3d(init_h, -0.01, 1.61, 1)
 surf3d_list[0].curvature[None] = 0.0
-params_dict["surf_1_curvature"] = surf3d_list[1].curvature
+params_dict["surf_1_curvature"] = surf3d_list[0].curvature
 params_dict["surf_1_curvature"][None] = -0.1
 
 # helper for draw surface
@@ -39,7 +39,7 @@ rays_num = 10
 fov_num = 3
 ray_helper = draw_rays(rays_num, fov_num, [-20,20,-20,20],[0,0.67,0,1])
 gui_rays = Rays_3d(rays_num, fov_num, 9, 0, for_show=True)
-opt_rays = Rays_3d(rays_num*5, fov_num, 9, 0)
+opt_rays = Rays_3d(rays_num, fov_num, 9, 0)
 spot_rays = Rays_3d(rays_num, fov_num, 9, 0)
 ray_bundle_width = 3
 
@@ -53,11 +53,12 @@ min_loss = 1e10
 down_count = 0
 @ti.kernel
 def mse_loss(rays: ti.template()):
+    # for i,j in rays.ray_field:
+    #     loss_mean[j] += rays.ray_field[i,j].re.xy / rays.ray_nums
+    # loss[None] = 0.0
     for i,j in rays.ray_field:
-        loss_mean[j] += rays.ray_field[i,j].re.xy / rays.ray_nums
-    for i,j in rays.ray_field:
-        error_v = (rays.ray_field[i,j].re.xy-loss_mean[j])
-        loss[None] += (error_v.x**2 +error_v.y**2) / rays.ray_nums
+        error_v = (rays.ray_field[i,j].re.xy-tm.vec2([0.0,0.0]))
+        loss[None] += (error_v.x**2 + error_v.y**2) / rays.ray_nums
 
 # forward once to warm up device
 opt_rays.build_rays_random(ray_bundle_width, 1)
@@ -67,9 +68,9 @@ with ti.ad.Tape(loss):
         refract(opt_rays, surf)
     opt_rays.intersect_with_plane(15)
     mse_loss(opt_rays)
-print(surf3d_list[1].curvature.grad[None])
+print(surf3d_list[0].curvature.grad[None])
 ti.ad.clear_all_gradients()
-print(surf3d_list[1].curvature.grad[None])
+print(surf3d_list[0].curvature.grad[None])
 # %%
 
 # var for slider
@@ -118,12 +119,15 @@ while window.running:
         opt_rays.build_rays_random(ray_bundle_width,fov_slider)
 
         print(loss.grad[None])
+        loss[None] = 0.0
+        # loss.grad[None] = 1.0
         with ti.ad.Tape(loss):
             for surf in surf3d_list:
-                intersection_no_grad(opt_rays, surf)
+                intersection(opt_rays, surf)
                 refract(opt_rays, surf)
             opt_rays.intersect_with_plane(15)
             mse_loss(opt_rays)
+        
         
 
         if(min_loss > loss[None]):
